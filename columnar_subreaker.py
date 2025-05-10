@@ -442,7 +442,7 @@ def main():
     parser.add_argument("--quadgrams", type=str, default="EN.json", help="Path to the quadgrams file")
     parser.add_argument("--max-rounds", type=int, default=10000, help="Maximum hill climbing rounds")
     parser.add_argument("--consolidate", type=int, default=3, help="Consolidation parameter")
-    parser.add_argument("--processes", type=int, default=8, help="Number of processes to use")
+    parser.add_argument("--processes", type=int, default=os.cpu_count() -1, help="Number of processes to use")
     parser.add_argument("--output", type=str, help="Output file for results")
     parser.add_argument("--double", action="store_true", help="Use double transposition (default is single)")
     parser.add_argument("--caesar", action="store_true", help="Use Caesar cipher brute force instead of hill climbing")

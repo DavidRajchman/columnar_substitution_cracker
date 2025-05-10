@@ -32,7 +32,7 @@ Required Python libraries:
 
 ## Using PyPy for Enhanced Performance
 
-This tool runs significantly faster with PyPy, especially for large ciphers or double transposition:
+This tool runs significantly faster for longer workloads with PyPy, especially for large ciphers or double transposition:
 
 1. Install PyPy from https://www.pypy.org/download.html
 
@@ -64,7 +64,7 @@ python columnar_subreaker.py --file encrypted.txt --quadgrams EN.json
 | `--threshold FLOAT` | Minimum fitness threshold for Caesar cipher results (default: 90) |
 | `--max-rounds INT` | Maximum hill climbing rounds for substitution breaking (default: 10000) |
 | `--consolidate INT` | Number of times the best local maximum must be found (default: 3) |
-| `--processes INT` | Number of parallel processes to use (default: 8) |
+| `--processes INT` | Number of parallel processes to use (default: CPU number of threads -1) |
 | `--output FILE` | Save full results to a JSON file |
 
 ## Breaking Different Cipher Types
