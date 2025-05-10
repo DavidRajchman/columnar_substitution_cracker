@@ -100,7 +100,7 @@ def break_double_transposition_cipher(ciphertext, quadgram_file, max_rounds=1000
     first_grid_sizes = find_grid_sizes(text_length)
     
     if not first_grid_sizes:
-        print("No valid grid sizes found for this text length.")
+        print("No valid grid sizes found for this text length (Both sides must be at least 3 wide).")
         return []
     
     print(f"Found {len(first_grid_sizes)} possible grid sizes for first transposition:")
