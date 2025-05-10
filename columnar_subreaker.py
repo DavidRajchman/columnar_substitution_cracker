@@ -1,3 +1,6 @@
+#################################################
+# IMPORTS AND SETUP
+#################################################
 import os
 import time
 import json
@@ -5,6 +8,10 @@ import argparse
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 import subbreaker
+
+#################################################
+# CORE UTILITY FUNCTIONS
+#################################################
 
 def find_grid_sizes(text_length):
     """Find all possible grid sizes for columnar transposition"""
@@ -55,6 +62,14 @@ def reverse_double_transposition(ciphertext, first_rows, first_cols, second_rows
     
     return result
 
+def get_caesar_key(shift, alphabet="abcdefghijklmnopqrstuvwxyz"):
+    """Generate a substitution key for a Caesar cipher with given shift."""
+    return alphabet[shift:] + alphabet[:shift]
+
+#################################################
+# SUBSTITUTION BREAKING FUNCTIONS
+#################################################
+
 def break_substitution(task_args):
     """Break the substitution cipher on a transposed text"""
     untransposed, quadgram_file, first_rows, first_cols, second_rows, second_cols, max_rounds, consolidate = task_args
@@ -89,6 +104,185 @@ def break_substitution(task_args):
         "keys_tried": result.nbr_keys,
         "elapsed_time": elapsed_time
     }
+
+def break_single_substitution(task_args):
+    """Break the substitution cipher on a single transposed text"""
+    untransposed, quadgram_file, rows, cols, max_rounds, consolidate = task_args
+    
+    # Initialize the breaker
+    start_time = time.time()
+    with open(quadgram_file, 'r') as f:
+        breaker = subbreaker.Breaker(f)
+    
+    # Break the substitution cipher
+    result = breaker.break_cipher(
+        untransposed,
+        max_rounds=max_rounds,
+        consolidate=consolidate
+    )
+    
+    elapsed_time = time.time() - start_time
+    
+    # Create a Key object from the result key string
+    key_obj = subbreaker.Key(result.key, alphabet=result.alphabet)
+    
+    # Decode the text using the key object
+    decrypted = key_obj.decode(untransposed)
+    
+    return {
+        "rows": rows,
+        "cols": cols,
+        "untransposed": untransposed,
+        "decrypted": decrypted,
+        "key": result.key,  # String representation of the key
+        "fitness": result.fitness,
+        "keys_tried": result.nbr_keys,
+        "elapsed_time": elapsed_time
+    }
+
+def try_caesar_shifts(untransposed, breaker, fitness_threshold=90):
+    """Try all 26 Caesar shifts for a given text and return those above threshold."""
+    results = []
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    
+    # Try all 26 possible shifts
+    for shift in range(26):
+        # Generate Caesar key
+        caesar_key = get_caesar_key(shift)
+        key_obj = subbreaker.Key(caesar_key)
+        
+        # Decode with this key
+        decrypted = key_obj.decode(untransposed)
+        
+        # Calculate fitness
+        fitness = breaker.calc_fitness(decrypted)
+        
+        # If fitness is above threshold, save this result
+        if fitness >= fitness_threshold:
+            results.append({
+                "shift": shift,
+                "key": caesar_key,
+                "decrypted": decrypted,
+                "fitness": fitness
+            })
+    
+    return results
+
+#################################################
+# CAESAR CIPHER BREAKING FUNCTIONS
+#################################################
+
+def break_caesar_single_transposition(task_args):
+    """Process a batch of single transpositions with Caesar cipher."""
+    ciphertext_batch, quadgram_file, grid_sizes, fitness_threshold = task_args
+    
+    # Initialize breaker once for this batch
+    with open(quadgram_file, 'r') as f:
+        breaker = subbreaker.Breaker(f)
+    
+    all_results = []
+    
+    # For each grid size in this batch
+    for rows, cols in grid_sizes:
+        # Reverse the transposition
+        untransposed = reverse_columnar_transposition(ciphertext_batch, rows, cols)
+        
+        # Try all Caesar shifts and get results above threshold
+        caesar_results = try_caesar_shifts(untransposed, breaker, fitness_threshold)
+        
+        # Add grid info to each result
+        for result in caesar_results:
+            result["rows"] = rows
+            result["cols"] = cols
+            all_results.append(result)
+    
+    return all_results
+
+def break_caesar_double_transposition(task_args):
+    """Process a batch of double transpositions with Caesar cipher."""
+    ciphertext_batch, quadgram_file, grid_combinations, fitness_threshold = task_args
+    
+    # Initialize breaker once for this batch
+    with open(quadgram_file, 'r') as f:
+        breaker = subbreaker.Breaker(f)
+    
+    all_results = []
+    
+    # For each grid combination in this batch
+    for first_grid, second_grid in grid_combinations:
+        first_rows, first_cols = first_grid
+        second_rows, second_cols = second_grid
+        
+        # Reverse the double transposition
+        untransposed = reverse_double_transposition(
+            ciphertext_batch,
+            first_rows, first_cols,
+            second_rows, second_cols
+        )
+        
+        # Try all Caesar shifts and get results above threshold
+        caesar_results = try_caesar_shifts(untransposed, breaker, fitness_threshold)
+        
+        # Add grid info to each result
+        for result in caesar_results:
+            result["first_grid"] = first_grid
+            result["second_grid"] = second_grid
+            all_results.append(result)
+    
+    return all_results
+
+#################################################
+# MAIN ALGORITHM FUNCTIONS
+#################################################
+
+def break_combined_cipher(ciphertext, quadgram_file, max_rounds=10000, consolidate=3, processes=None):
+    """Break a combined columnar transposition and substitution cipher"""
+    if not processes:
+        processes = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
+    
+    # Get all possible grid sizes
+    grid_sizes = find_grid_sizes(len(ciphertext))
+    
+    if not grid_sizes:
+        print("No valid grid sizes found for this text length.")
+        return []
+    
+    print(f"Found {len(grid_sizes)} possible grid sizes:")
+    for i, (rows, cols) in enumerate(grid_sizes):
+        print(f"{i+1}. {rows} rows × {cols} columns")
+    
+    # Prepare tasks for parallel processing
+    tasks = []
+    
+    for rows, cols in grid_sizes:
+        # Reverse the columnar transposition
+        untransposed = reverse_columnar_transposition(ciphertext, rows, cols)
+        
+        # Create task for breaking substitution
+        tasks.append((untransposed, quadgram_file, rows, cols, max_rounds, consolidate))
+    
+    # Process tasks in parallel
+    results = []
+    start_time = time.time()
+    
+    with ProcessPoolExecutor(max_workers=processes) as executor:
+        # Use break_single_substitution instead of break_substitution
+        for i, result in enumerate(executor.map(break_single_substitution, tasks)):
+            results.append(result)
+            
+            rows, cols = result["rows"], result["cols"]
+            print(f"\nCompleted {i+1}/{len(tasks)}: {rows}×{cols} grid")
+            print(f"Fitness: {result['fitness']:.2f}")
+            print(f"Keys tried: {result['keys_tried']}")
+            print(f"Time: {result['elapsed_time']:.2f}s")
+    
+    total_time = time.time() - start_time
+    print(f"\nTotal processing time: {total_time:.2f}s")
+    
+    # Sort results by fitness
+    results.sort(key=lambda x: x["fitness"], reverse=True)
+    
+    return results
 
 def break_double_transposition_cipher(ciphertext, quadgram_file, max_rounds=10000, consolidate=3, processes=None):
     """Break a double columnar transposition followed by substitution cipher"""
@@ -161,97 +355,6 @@ def break_double_transposition_cipher(ciphertext, quadgram_file, max_rounds=1000
     results.sort(key=lambda x: x["fitness"], reverse=True)
     
     return results
-
-def get_caesar_key(shift, alphabet="abcdefghijklmnopqrstuvwxyz"):
-    """Generate a substitution key for a Caesar cipher with given shift."""
-    return alphabet[shift:] + alphabet[:shift]
-
-def try_caesar_shifts(untransposed, breaker, fitness_threshold=90):
-    """Try all 26 Caesar shifts for a given text and return those above threshold."""
-    results = []
-    alphabet = "abcdefghijklmnopqrstuvwxyz"
-    
-    # Try all 26 possible shifts
-    for shift in range(26):
-        # Generate Caesar key
-        caesar_key = get_caesar_key(shift)
-        key_obj = subbreaker.Key(caesar_key)
-        
-        # Decode with this key
-        decrypted = key_obj.decode(untransposed)
-        
-        # Calculate fitness
-        fitness = breaker.calc_fitness(decrypted)
-        
-        # If fitness is above threshold, save this result
-        if fitness >= fitness_threshold:
-            results.append({
-                "shift": shift,
-                "key": caesar_key,
-                "decrypted": decrypted,
-                "fitness": fitness
-            })
-    
-    return results
-
-def break_caesar_single_transposition(task_args):
-    """Process a batch of single transpositions with Caesar cipher."""
-    ciphertext_batch, quadgram_file, grid_sizes, fitness_threshold = task_args
-    
-    # Initialize breaker once for this batch
-    with open(quadgram_file, 'r') as f:
-        breaker = subbreaker.Breaker(f)
-    
-    all_results = []
-    
-    # For each grid size in this batch
-    for rows, cols in grid_sizes:
-        # Reverse the transposition
-        untransposed = reverse_columnar_transposition(ciphertext_batch, rows, cols)
-        
-        # Try all Caesar shifts and get results above threshold
-        caesar_results = try_caesar_shifts(untransposed, breaker, fitness_threshold)
-        
-        # Add grid info to each result
-        for result in caesar_results:
-            result["rows"] = rows
-            result["cols"] = cols
-            all_results.append(result)
-    
-    return all_results
-
-def break_caesar_double_transposition(task_args):
-    """Process a batch of double transpositions with Caesar cipher."""
-    ciphertext_batch, quadgram_file, grid_combinations, fitness_threshold = task_args
-    
-    # Initialize breaker once for this batch
-    with open(quadgram_file, 'r') as f:
-        breaker = subbreaker.Breaker(f)
-    
-    all_results = []
-    
-    # For each grid combination in this batch
-    for first_grid, second_grid in grid_combinations:
-        first_rows, first_cols = first_grid
-        second_rows, second_cols = second_grid
-        
-        # Reverse the double transposition
-        untransposed = reverse_double_transposition(
-            ciphertext_batch,
-            first_rows, first_cols,
-            second_rows, second_cols
-        )
-        
-        # Try all Caesar shifts and get results above threshold
-        caesar_results = try_caesar_shifts(untransposed, breaker, fitness_threshold)
-        
-        # Add grid info to each result
-        for result in caesar_results:
-            result["first_grid"] = first_grid
-            result["second_grid"] = second_grid
-            all_results.append(result)
-    
-    return all_results
 
 def break_caesar_transposition_cipher(ciphertext, quadgram_file, double=False, fitness_threshold=90, processes=None):
     """Break a combined columnar transposition (single or double) + Caesar substitution cipher."""
@@ -328,40 +431,9 @@ def break_caesar_transposition_cipher(ciphertext, quadgram_file, double=False, f
     
     return all_results
 
-def break_single_substitution(task_args):
-    """Break the substitution cipher on a single transposed text"""
-    untransposed, quadgram_file, rows, cols, max_rounds, consolidate = task_args
-    
-    # Initialize the breaker
-    start_time = time.time()
-    with open(quadgram_file, 'r') as f:
-        breaker = subbreaker.Breaker(f)
-    
-    # Break the substitution cipher
-    result = breaker.break_cipher(
-        untransposed,
-        max_rounds=max_rounds,
-        consolidate=consolidate
-    )
-    
-    elapsed_time = time.time() - start_time
-    
-    # Create a Key object from the result key string
-    key_obj = subbreaker.Key(result.key, alphabet=result.alphabet)
-    
-    # Decode the text using the key object
-    decrypted = key_obj.decode(untransposed)
-    
-    return {
-        "rows": rows,
-        "cols": cols,
-        "untransposed": untransposed,
-        "decrypted": decrypted,
-        "key": result.key,  # String representation of the key
-        "fitness": result.fitness,
-        "keys_tried": result.nbr_keys,
-        "elapsed_time": elapsed_time
-    }
+#################################################
+# MAIN FUNCTION AND PROGRAM ENTRY
+#################################################
 
 def main():
     parser = argparse.ArgumentParser(description="Break a columnar transposition with substitution cipher")
@@ -454,56 +526,6 @@ def main():
             print(f"\nFull results saved to {args.output}")
     else:
         print("No results found.")
-
-# Keep the original single transposition function for backward compatibility
-def break_combined_cipher(ciphertext, quadgram_file, max_rounds=10000, consolidate=3, processes=None):
-    """Break a combined columnar transposition and substitution cipher"""
-    if not processes:
-        processes = max(1, multiprocessing.cpu_count() - 1)  # Leave one CPU free
-    
-    # Get all possible grid sizes
-    grid_sizes = find_grid_sizes(len(ciphertext))
-    
-    if not grid_sizes:
-        print("No valid grid sizes found for this text length.")
-        return []
-    
-    print(f"Found {len(grid_sizes)} possible grid sizes:")
-    for i, (rows, cols) in enumerate(grid_sizes):
-        print(f"{i+1}. {rows} rows × {cols} columns")
-    
-    # Prepare tasks for parallel processing
-    tasks = []
-    
-    for rows, cols in grid_sizes:
-        # Reverse the columnar transposition
-        untransposed = reverse_columnar_transposition(ciphertext, rows, cols)
-        
-        # Create task for breaking substitution
-        tasks.append((untransposed, quadgram_file, rows, cols, max_rounds, consolidate))
-    
-    # Process tasks in parallel
-    results = []
-    start_time = time.time()
-    
-    with ProcessPoolExecutor(max_workers=processes) as executor:
-        # Use break_single_substitution instead of break_substitution
-        for i, result in enumerate(executor.map(break_single_substitution, tasks)):
-            results.append(result)
-            
-            rows, cols = result["rows"], result["cols"]
-            print(f"\nCompleted {i+1}/{len(tasks)}: {rows}×{cols} grid")
-            print(f"Fitness: {result['fitness']:.2f}")
-            print(f"Keys tried: {result['keys_tried']}")
-            print(f"Time: {result['elapsed_time']:.2f}s")
-    
-    total_time = time.time() - start_time
-    print(f"\nTotal processing time: {total_time:.2f}s")
-    
-    # Sort results by fitness
-    results.sort(key=lambda x: x["fitness"], reverse=True)
-    
-    return results
 
 if __name__ == "__main__":
     # For Windows compatibility
